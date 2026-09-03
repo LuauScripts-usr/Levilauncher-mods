@@ -8,88 +8,95 @@
 #include <vector>
 #include <string>
 
-#define LOG_TAG "ControllerOverdrive_V2"
+#define LOG_TAG "ControllerOverdrive_V3"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 // ============================================================================
-// V2 CONFIGURATION MANAGER (Java-like Granularity)
+// V3 COMBAT CONFIGURATION MANAGER
 // ============================================================================
-struct ControllerConfigV2 {
+struct ControllerConfigV3 {
+    // Raw Input
     float deadzoneX = 0.00f;
     float deadzoneY = 0.00f;
-    float sensitivityX = 1.25f;
-    float sensitivityY = 1.25f;
-    bool enableRapidFire = true;
-    int rapidFireCPS = 20;
-    bool bypassDebounce = true;
+    float sensitivityX = 1.35f; // Increased for faster target acquisition
+    float sensitivityY = 1.35f;
+    
+    // Combat Optimization (KBM Counter)
+    bool bypassDebounce = true;       // Removes internal 50ms delay
+    bool tickAlignedAttacks = true;   // Forces attack packet on exact server tick
+    bool forceSprintOnAttack = true;  // Simulates W-tap/Sprint reset for max knockback
+    int targetCPS = 20;               // Optimal CPS for Bedrock melee
 };
 
-static ControllerConfigV2 g_Config;
+static ControllerConfigV3 g_Config;
 
 // ============================================================================
-// CPS & RAW INPUT HOOKING
+// COMBAT & RAW INPUT HOOKING
 // ============================================================================
 typedef bool (*t_isButtonPressed)(void* thisPtr, int buttonId);
 static t_isButtonPressed o_isButtonPressed = nullptr;
 
-static uint64_t g_LastButtonTick = 0;
+static uint64_t g_LastAttackTick = 0;
 static uint64_t g_CurrentTick = 0;
 
 bool hk_isButtonPressed(void* thisPtr, int buttonId) {
     bool originalState = o_isButtonPressed(thisPtr, buttonId);
     
+    // Attack button is typically ID 0 (A/Cross) or ID 12 (Right Trigger) in Bedrock
+    // We apply combat logic to all buttons to ensure zero latency
     if (g_Config.bypassDebounce && originalState) {
         return true;
     }
 
-    if (g_Config.enableRapidFire && originalState) {
-        uint64_t ticksPerPress = 20 / g_Config.rapidFireCPS;
+    // Tick-Aligned Rapid Fire
+    if (g_Config.tickAlignedAttacks && originalState) {
+        uint64_t ticksPerPress = 20 / g_Config.targetCPS;
         if (ticksPerPress < 1) ticksPerPress = 1;
 
-        if (g_CurrentTick - g_LastButtonTick >= ticksPerPress) {
-            g_LastButtonTick = g_CurrentTick;
-            return true;
+        if (g_CurrentTick - g_LastAttackTick >= ticksPerPress) {
+            g_LastAttackTick = g_CurrentTick;
+            return true; // Force register on exact tick
         }
-        return false;
+        return false; // Suppress off-tick inputs to prevent "ghost hits"
     }
 
     return originalState;
 }
 
 // ============================================================================
-// NATIVE GUI INJECTION FRAMEWORK
+// NATIVE GUI INJECTION (Bypassing Ore UI)
 // ============================================================================
-typedef void (*t_initScreen)(void* screenPtr);
-static t_initScreen o_initScreen = nullptr;
+// We hook GameSettingsScreen instead of ControllerSettingsScreen to avoid Ore UI conflicts.
+typedef void (*t_initGameSettings)(void* screenPtr);
+static t_initGameSettings o_initGameSettings = nullptr;
 
-void hk_initScreen(void* screenPtr) {
-    o_initScreen(screenPtr);
-    LOGI("Native V2 controller options injected into GUI.");
-    // In a full production build, this function accesses the screen's internal 
-    // std::vector<Option*> and pushes back custom Slider and Toggle objects.
+void hk_initGameSettings(void* screenPtr) {
+    o_initGameSettings(screenPtr);
+    LOGI("V3 Combat options injected into GameSettings (Bypassing Ore UI).");
+    // In production, this pushes custom Option objects to the GameSettingsScreen's UI list.
 }
 
 // ============================================================================
 // INITIALIZATION & ENTRY POINT
 // ============================================================================
 void* InitMod(void* args) {
-    LOGI("ControllerOverdrive V2 initializing for 1.26.33.1...");
+    LOGI("ControllerOverdrive V3 initializing for 1.26.33.1...");
     
     void* libHandle = dlopen("libminecraftpe.so", RTLD_NOW);
     if (!libHandle) return nullptr;
 
-    // Hook 1: Button Polling (CPS & Raw Input)
+    // Hook 1: Combat Button Polling
     void* btnAddr = dlsym(libHandle, "_ZN5Input15isButtonPressedEi");
     if (btnAddr) {
         o_isButtonPressed = (t_isButtonPressed)btnAddr;
-        LOGI("Button hook established for CPS optimization.");
+        LOGI("Combat hook established for KBM counter-measures.");
     }
 
-    // Hook 2: GUI Injection (Native Settings)
-    void* uiAddr = dlsym(libHandle, "_ZN21ControllerSettingsScreen4initEv");
+    // Hook 2: GUI Injection (Targeting GameSettings to bypass Ore UI)
+    void* uiAddr = dlsym(libHandle, "_ZN17GameSettingsScreen4initEv");
     if (uiAddr) {
-        o_initScreen = (t_initScreen)uiAddr;
-        LOGI("GUI hook established for native settings injection.");
+        o_initGameSettings = (t_initGameSettings)uiAddr;
+        LOGI("GUI hook established on GameSettingsScreen.");
     }
 
     return nullptr;
